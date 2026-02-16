@@ -11,6 +11,7 @@ Uint32 get_pixel32( SDL_Surface *surface, int x, int y )
 
 void put_pixel32( SDL_Surface *surface, int x, int y, Uint32 pixel )
 {
+    if(!surface) return;
     //Convert the pixels to 32 bit
     Uint32 *pixels = (Uint32 *)surface->pixels;
     

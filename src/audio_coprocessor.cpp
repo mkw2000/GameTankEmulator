@@ -22,6 +22,10 @@ void AudioCoprocessor::register_write(uint16_t address, uint8_t value) {
             state.irqCounter = 255;
             break;
 		case ACP_NMI:
+#ifdef NDS_BUILD
+            state.cpu->NMI();
+            state.cpu->Run(state.cycles_per_sample, state.cycle_counter);
+#else
             SDL_LockAudioDevice(state.device);
             state.cpu->NMI();
             state.cpu->Run(state.cycles_per_sample, state.cycle_counter);
@@ -29,6 +33,7 @@ void AudioCoprocessor::register_write(uint16_t address, uint8_t value) {
             state.cpu->Run(state.cycles_per_sample, state.cycle_counter);
 #endif
             SDL_UnlockAudioDevice(state.device);
+#endif
 			break;
 		case ACP_RATE:
 			state.irqRate = (((value << 1) & 0xFE) | (value & 1));
@@ -126,6 +131,16 @@ void ACP_CPUStopped() {
 }
 
 void AudioCoprocessor::StartAudio() {
+#ifdef NDS_BUILD
+    // On DS, we run audio in sync with the main loop via fill_audio()
+    // called from the main emulation loop (EmulatorConfig::noSound path).
+    // The DS sound hardware will be driven from the fill_audio output.
+    // soundEnable(); // Creates a crash on DSi with calico ARM7
+    // printf(" ACP: DISABLED soundEnable() to prevent crash\n");
+    state.clksPerHostSample = 315000000 / (88 * 22050);
+    state.format = AUDIO_S16LSB;
+    state.device = 1; // dummy non-zero value
+#else
     SDL_AudioSpec wanted, obtained;
 
     /* Set the audio format */
@@ -151,6 +166,7 @@ void AudioCoprocessor::StartAudio() {
 
         state.clksPerHostSample = 315000000 / (88 * obtained.freq);
     }
+#endif
 }
 
 AudioCoprocessor::AudioCoprocessor() {

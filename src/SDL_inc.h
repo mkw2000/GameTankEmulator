@@ -1,4 +1,6 @@
-#ifdef _WIN32
+#ifdef NDS_BUILD
+#include "nds_platform.h"
+#elif defined(_WIN32)
 #include <SDL.h>
 #elif __APPLE__
 #include "SDL.h"
