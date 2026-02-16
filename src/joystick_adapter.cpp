@@ -3,10 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
+#ifndef NDS_BUILD
 #include "joystick_config.h"
+#endif
 
 JoystickAdapter::JoystickAdapter() {
-
+#ifndef NDS_BUILD
 	load_joystick_config(this->bindings);
 
 	if(!EmulatorConfig::noJoystick) {
@@ -19,13 +21,16 @@ JoystickAdapter::JoystickAdapter() {
 			printf("Joystick NOT found\n");
 		}
 	}
+#endif
 }
 
 JoystickAdapter::~JoystickAdapter() {
+#ifndef NDS_BUILD
 	if(gGameController != NULL) {
 		SDL_JoystickClose(gGameController);
 		gGameController = NULL;
 	}
+#endif
 }
 
 uint8_t JoystickAdapter::read(uint8_t portNum, bool stateful) {
@@ -68,9 +73,29 @@ uint16_t button_masks[BUTTON_COUNT] = {
 };
 
 void JoystickAdapter::SaveBindings() {
+#ifndef NDS_BUILD
 	save_joystick_config(this->bindings);
+#endif
 }
 
+#ifdef NDS_BUILD
+void JoystickAdapter::updateNDS(bool menuMode) {
+	// scanKeys() must be called before this function
+	if (menuMode) return; // Don't map game input while menu is open
+	uint16_t held = keysHeld();
+	pad1Mask = 0;
+	if (held & KEY_UP)    pad1Mask |= GameTankButtons::UP;
+	if (held & KEY_DOWN)  pad1Mask |= GameTankButtons::DOWN;
+	if (held & KEY_LEFT)  pad1Mask |= GameTankButtons::LEFT;
+	if (held & KEY_RIGHT) pad1Mask |= GameTankButtons::RIGHT;
+	if (held & KEY_A)     pad1Mask |= GameTankButtons::A;
+	if (held & KEY_B)     pad1Mask |= GameTankButtons::B;
+	if (held & KEY_X)     pad1Mask |= GameTankButtons::C;
+	if (held & KEY_START) pad1Mask |= GameTankButtons::START;
+}
+#endif
+
+#ifndef NDS_BUILD
 void JoystickAdapter::update(SDL_Event *e) {
 	/*
 		Up - DB9 pin 1 - bit 3
@@ -205,6 +230,9 @@ void JoystickAdapter::update(SDL_Event *e) {
 		}
 	}
 }
+#endif // !NDS_BUILD
+
+
 
 void JoystickAdapter::SetHeldButtons(uint16_t heldMask) {
 	held1Mask = heldMask;

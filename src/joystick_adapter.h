@@ -61,8 +61,10 @@ private:
 		0, 0, 0, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0,
 	};
+#ifndef NDS_BUILD
 	SDL_Joystick* gGameController = NULL;
 	SDL_JoystickID gGameControllerId = 0;
+#endif
 public:
 	JoystickAdapter();
 	~JoystickAdapter();
@@ -72,4 +74,7 @@ public:
 	std::vector<InputBinding> bindings;
 	void SaveBindings();
 	void Reset();
+#ifdef NDS_BUILD
+	void updateNDS(bool menuMode = false);
+#endif
 };

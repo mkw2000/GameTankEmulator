@@ -1,4 +1,49 @@
 #include "SDL_inc.h"
+#ifdef NDS_BUILD
+#include <sys/iosupport.h>
+#include <sys/reent.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <fat.h>
+#include <nds/disc_io.h>
+#include <nds/arm9/console.h>
+// _open_r override removed — using standard libfat implementation
+#endif
+
+#ifdef NDS_BUILD
+void WaitForA(const char* msg) {
+	printf("%s\nPress A...\n", msg);
+	while(1) { swiWaitForVBlank(); scanKeys(); if (keysDown() & KEY_A) break; }
+}
+
+void DebugFilesystem() {
+	printf("Debug Filesystem:\n");
+	
+	// List all devices
+	for (int i = 0; i < 32; ++i) { 
+		if (devoptab_list[i]) {
+			printf("  dev[%d]:name='%s' open=%p\n", i, devoptab_list[i]->name, devoptab_list[i]->open_r);
+		} else {
+			// printf("  dev[%d]: NULL\n", i); // Optional
+		}
+		
+		if ((i + 1) % 8 == 0) {
+			WaitForA("-- More --");
+		}
+	}
+
+	int dev = FindDevice("fat:");
+	printf("FindDevice('fat:'): %d\n", dev);
+	if (dev == -1) {
+		dev = FindDevice("sd:");
+		printf("FindDevice('sd:'): %d\n", dev);
+	}
+	
+	printf("\n");
+	WaitForA("Continue...");
+}
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,11 +51,17 @@
 #include <time.h>
 #include <fstream>
 #include <cstring>
+#ifndef NDS_BUILD
 #include <filesystem>
+#endif
 #include <vector>
+#ifndef NDS_BUILD
 #include <thread>
+#endif
 #include <algorithm>
-#ifdef WASM_BUILD
+#ifdef NDS_BUILD
+// NDS build — no ImGui, tinyfiledialogs, whereami, or emscripten
+#elif defined(WASM_BUILD)
 #include "emscripten.h"
 #include <emscripten/html5.h>
 #else
@@ -25,10 +76,14 @@
 #include "timekeeper.h"
 #include "system_state.h"
 #include "emulator_config.h"
+
+#ifndef NDS_BUILD
 #include "game_config.h"
+#endif
 
 #include "mos6502/mos6502.h"
 
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 #include "devtools/memory_map.h"
 #include "devtools/breakpoints.h"
 #include "devtools/source_map.h"
@@ -37,7 +92,6 @@
 #include "devtools/profiler.h"
 #include "devtools/disassembler.h"
 
-#ifndef WASM_BUILD
 #include "devtools/profiler_window.h"
 #include "devtools/mem_browser_window.h"
 #include "devtools/vram_window.h"
@@ -69,15 +123,22 @@ JoystickAdapter *joysticks;
 SystemState system_state;
 CartridgeState cartridge_state;
 
+#ifndef NDS_BUILD
 const int SCREEN_WIDTH = 683;	
 const int SCREEN_HEIGHT = 512;
+#endif
 RGB_Color *palette;
 
-MemoryMap* loadedMemoryMap;
-GameConfig* gameconfig;
 std::string currentRomFilePath;
 std::string nvramFileFullPath;
 std::string flashFileFullPath;
+
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
+MemoryMap* loadedMemoryMap;
+#endif
+#ifndef NDS_BUILD
+GameConfig* gameconfig;
+#endif
 
 bool vsyncProfileArmed = false;
 bool vsyncProfileRunning = false;
@@ -107,7 +168,9 @@ void LoadNVRAM() {
 	file.close();
 }
 
+#ifndef NDS_BUILD
 std::thread savingThread;
+#endif
 
 void SaveModifiedFlash() {
 	if(EmulatorConfig::noSave) return;
@@ -191,9 +254,14 @@ const uint8_t VIA_SPI_BIT_MISO = 0b10000000;
 
 extern unsigned char font_map[];
 
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 Timekeeper timekeeper;
 Profiler profiler(timekeeper);
+#else
+Timekeeper timekeeper;
+#endif
 
+#ifndef NDS_BUILD
 SDL_Surface* gRAM_Surface = NULL;
 SDL_Surface* vRAM_Surface = NULL;
 
@@ -210,6 +278,12 @@ std::vector<BaseWindow*> toolWindows;
 
 SDL_Renderer* mainRenderer = NULL;
 SDL_Texture* framebufferTexture = NULL;
+#else
+// NDS build — use stub surfaces, no windows/renderers
+SDL_Surface* gRAM_Surface = NULL;
+SDL_Surface* vRAM_Surface = NULL;
+Uint32 rmask, gmask, bmask, amask;
+#endif
 
 bool isFullScreen = false;
 
@@ -265,10 +339,12 @@ void VDMA_Write(uint16_t address, uint8_t value) {
 		}
 		bufPtr[(address & 0x3FFF) | offset] = value;
 
-		uint8_t x, y;
-		x = address & 127;
-		y = (address >> 7) & 127;
-		put_pixel32(targetSurface, x, y + yShift, Palette::ConvertColor(targetSurface, value));
+		if(targetSurface) {
+			uint8_t x, y;
+			x = address & 127;
+			y = (address >> 7) & 127;
+			put_pixel32(targetSurface, x, y + yShift, Palette::ConvertColor(targetSurface, value));
+		}
 	}
 }
 
@@ -359,6 +435,7 @@ uint8_t MemoryRead(uint16_t address) {
 }
 
 uint8_t MemorySync(uint16_t address) {
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 	if(timekeeper.clock_mode == CLOCKMODE_NORMAL) {
 		if(Breakpoints::checkBreakpoint(address, cartridge_state.bank_mask)) {
 			timekeeper.clock_mode = CLOCKMODE_STOPPED;
@@ -373,6 +450,7 @@ uint8_t MemorySync(uint16_t address) {
 			profiler.LogRTS(address, cartridge_state.bank_mask);
 		}
 	}
+#endif
 	return MemoryRead(address);
 }
 
@@ -443,7 +521,7 @@ void MemoryWrite(uint16_t address, uint8_t value) {
 					cartridge_state.write_mode = true;
 				} else if(value == 0x90) {
 					//first byte of lock command should be a good time to write to file
-#ifdef WASM_BUILD
+#if defined(WASM_BUILD) || defined(NDS_BUILD)
 					SaveModifiedFlash();
 #else
 					if(savingThread.joinable()) {
@@ -469,6 +547,7 @@ void MemoryWrite(uint16_t address, uint8_t value) {
 			if((address & 0xF) == VIA_ORB) {
 				if((system_state.VIA_regs[VIA_ORB] & 0x80) && !(value & 0x80)) {
 					//falling edge of high bit of ORB
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 					if(value & 0x40) {
 						//report duration
 						profiler.LogTime(value & 0x3F);
@@ -476,6 +555,7 @@ void MemoryWrite(uint16_t address, uint8_t value) {
 						//store timestamp
 						profiler.profilingTimeStamps[value & 0x3F] = timekeeper.totalCyclesCount;
 					}
+#endif
 				}
 			}
 			system_state.VIA_regs[address & 0xF] = value;
@@ -483,19 +563,23 @@ void MemoryWrite(uint16_t address, uint8_t value) {
 			if((address & 0x000F) == 0x0007) {
 				blitter->CatchUp();
 				if((value & DMA_VID_OUT_PAGE_BIT) != (system_state.dma_control & DMA_VID_OUT_PAGE_BIT)) {
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 					profiler.bufferFlipCount++;
 					if(profiler.measure_by_frameflip) {
 						profiler.ResetTimers();
 						profiler.last_blitter_activity = blitter->pixels_this_frame;
 						blitter->pixels_this_frame = 0;
 					}
+#endif
 				}
 				system_state.dma_control = value;
 				system_state.dma_control_irq = (system_state.dma_control & DMA_COPY_IRQ_BIT) != 0;
-				if(system_state.dma_control & DMA_TRANSPARENCY_BIT) {
-					SDL_SetColorKey(gRAM_Surface, SDL_TRUE, SDL_MapRGB(gRAM_Surface->format, 0, 0, 0));
-				} else {
-					SDL_SetColorKey(gRAM_Surface, SDL_FALSE, 0);
+				if(gRAM_Surface) {
+					if(system_state.dma_control & DMA_TRANSPARENCY_BIT) {
+						SDL_SetColorKey(gRAM_Surface, SDL_TRUE, SDL_MapRGB(gRAM_Surface->format, 0, 0, 0));
+					} else {
+						SDL_SetColorKey(gRAM_Surface, SDL_FALSE, 0);
+					}
 				}
 			} else if((address & 0x000F) == 0x0005) {
 				blitter->CatchUp();
@@ -529,7 +613,9 @@ void randomize_vram() {
 	}
 	for(int i = 0; i < GRAM_BUFFER_SIZE; i ++) {
 		system_state.gram[i] = rand() % 256;
-		put_pixel32(gRAM_Surface, i & 127, i >> 7, Palette::ConvertColor(gRAM_Surface, system_state.gram[i]));
+		if (gRAM_Surface) {
+			put_pixel32(gRAM_Surface, i & 127, i >> 7, Palette::ConvertColor(gRAM_Surface, system_state.gram[i]));
+		}
 	}
 }
 
@@ -577,6 +663,7 @@ void CPUStopped() {
 #endif
 }
 
+#ifndef NDS_BUILD
 const char * open_rom_dialog() {
 	char const * lFilterPatterns[1] = {"*.gtr"};
 #ifdef TINYFILEDIALOGS_H
@@ -591,12 +678,38 @@ const char * open_rom_dialog() {
 	return EMBED_ROM_FILE;
 #endif
 }
+#endif // !NDS_BUILD
 
 extern "C" {
 	// Attempts to load a rom by filename into a buffer
 	// 0 on success
 	// -1 on failure (e.g. file by name doesn't exist)
 	int LoadRomFile(const char* filename) {
+		printf("Enter LoadRomFile\n");
+#ifdef NDS_BUILD
+		// NDS: simple string-based path handling
+        // avoid std::string allocation for debugging
+		// currentRomFilePath = std::string(filename);
+
+		// Build save file paths by replacing extension
+        /*
+		std::string basePath = currentRomFilePath;
+		size_t dotPos = basePath.rfind('.');
+		if (dotPos != std::string::npos) {
+			basePath = basePath.substr(0, dotPos);
+		}
+		nvramFileFullPath = basePath + ".sav";
+        */
+        // Hardcode save path for now or use C-string
+        // nvramFileFullPath = "fat:/save.sav"; 
+        
+		if (EmulatorConfig::xorFile != NULL) {
+			flashFileFullPath = std::string(EmulatorConfig::xorFile);
+		} else {
+			// flashFileFullPath = basePath + ".xor";
+		}
+#else
+		std::filesystem::path filepath(filename);
 		std::filesystem::path filepath(filename);
 		currentRomFilePath = filepath.string();
 #ifdef WASM_BUILD
@@ -636,19 +749,38 @@ extern "C" {
 		} else {
 			printf("default source map file %s not found\n", defaultSourceMapFilePath.c_str());
 		}
+#endif // NDS_BUILD
 
 		printf("loading %s\n", filename);
 		FILE* romFileP = fopen(filename, "rb");
 		if(!romFileP) {
+#ifdef NDS_BUILD
+			printf("fopen failed: %s\n", strerror(errno));
+#endif
 			printf("Unable to open file: %s\n", filename);
 			return -1;
 		}
-
 		fseek(romFileP, 0L, SEEK_END);
-		cartridge_state.size = ftell(romFileP);
-		//cartridge_state.rom = new uint8_t [cartridge_state.size];
-		cartridge_state.write_mode = false;
+		long fsize = ftell(romFileP);
 		rewind(romFileP);
+
+		printf("File size: %ld\n", fsize);
+		
+		if (fsize < 0) {
+			printf("ftell failed! closing.\n");
+			fclose(romFileP);
+			return -1;
+		}
+		
+		if (fsize > (1 << 21)) {
+			printf("ROM too large! Cap to 2MB.\n");
+			cartridge_state.size = (1 << 21);
+		} else {
+			cartridge_state.size = fsize;
+		}
+		
+		cartridge_state.write_mode = false;
+		
 		switch(cartridge_state.size) {
 			case 8192:
 			loadedRomType = RomType::EEPROM8K;
@@ -663,12 +795,18 @@ extern "C" {
 			printf("Detected 2M (Flash)\n");
 			break;
 			default:
-			loadedRomType = RomType::UNKNOWN;
-			printf("Unknown ROM type: Size is %d bytes\n", cartridge_state.size);
+			// loadedRomType = RomType::UNKNOWN; // Don't override unknown?
+			printf("Unknown ROM type (size %d)\n", cartridge_state.size);
+			if (cartridge_state.size > 2000000) loadedRomType = RomType::FLASH2M; // Assume flash if large
+			else loadedRomType = RomType::EEPROM32K; // Fallback?
 			break;
 		}
+		
+		printf("Reading %d bytes...\n", cartridge_state.size);
 		fread(cartridge_state.rom, sizeof(uint8_t), cartridge_state.size, romFileP);
+		printf("Read complete.\n");
 		fclose(romFileP);
+
 		if(cpu_core) {
 			paused = false;
 			cpu_core->Reset();
@@ -676,8 +814,11 @@ extern "C" {
 		}
 
 		if(loadedRomType == RomType::FLASH2M) {
-
+#ifdef NDS_BUILD
+			if(file_exists(flashFileFullPath.c_str())) {
+#else
 			if(std::filesystem::exists(flashFileFullPath.c_str())) {
+#endif
 				std::cout << "Loading flash save from " << flashFileFullPath << "\n";
 				LoadModifiedFlash();
 			} else {
@@ -690,7 +831,11 @@ extern "C" {
 				(cartridge_state.rom[0x1FFFF2] == 'V') &&
 				(cartridge_state.rom[0x1FFFF3] == 'E')) {
 					loadedRomType = RomType::FLASH2M_RAM32K;
+#ifdef NDS_BUILD
+					if(file_exists(nvramFileFullPath.c_str())) {
+#else
 					if(std::filesystem::exists(nvramFileFullPath.c_str())) {
+#endif
 						LoadNVRAM();
 					}
 				}
@@ -704,14 +849,16 @@ extern "C" {
 		}
 	}
 
+#ifndef NDS_BUILD
 	void takeScreenShot() {
 		SDL_Surface *screenshot = SDL_CreateRGBSurface(0, SCREEN_WIDTH, SCREEN_HEIGHT, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
 		SDL_RenderReadPixels(mainRenderer, NULL, SDL_PIXELFORMAT_ARGB8888, screenshot->pixels, screenshot->pitch);
 		SDL_SaveBMP(screenshot, "screenshot.bmp");
 		SDL_FreeSurface(screenshot);
 	}
+#endif
 }
-#ifndef WASM_BUILD
+#if !defined(WASM_BUILD) && !defined(NDS_BUILD)
 template <typename T>
 void closeToolByType() {
     toolWindows.erase(
@@ -798,6 +945,7 @@ void toggleControllerOptionsWindow() {
 
 #endif
 
+#ifndef NDS_BUILD
 void toggleFullScreen() {
 	if(isFullScreen) {
 		SDL_SetWindowFullscreen(mainWindow, 0);
@@ -808,6 +956,7 @@ void toggleFullScreen() {
 	}
 	timekeeper.scaling_increment = INITIAL_SCALING_INCREMENT;
 }
+#endif
 
 void toggleMute() {
 	muteMask = muteMask ^ MUTE_SOURCE_MANUAL;
@@ -822,6 +971,7 @@ void setMenuMute(bool muted) {
 	AudioCoprocessor::singleton_acp_state->isMuted = (muteMask != 0);
 }
 
+#ifndef NDS_BUILD
 typedef struct HotkeyAssignment {
 	void (*func)();
 	SDL_Keycode  key;
@@ -849,12 +999,368 @@ bool checkHotkey(SDL_Keycode  key) {
 	}
 	return false;
 }
+#endif // !NDS_BUILD
+
+#ifdef NDS_BUILD
+#include <dirent.h>
+#include <errno.h>
+#include <strings.h>
+
+void DebugListDir(const char* path) {
+	DIR* dir = opendir(path);
+	if (!dir) {
+		printf("opendir('%s') failed: %s\n", path, strerror(errno));
+		return;
+	}
+	printf("Contents of '%s':\n", path);
+	struct dirent* ent;
+	while ((ent = readdir(dir)) != NULL) {
+		printf("  %s%s\n", ent->d_name, (ent->d_type == DT_DIR) ? "/" : "");
+	}
+	closedir(dir);
+	printf("---\n");
+}
+
+// ============================================================
+// NDS Bottom Screen Menu System
+// ============================================================
+
+enum NDSMenuScreen {
+	NDS_MENU_MAIN,
+	NDS_MENU_FILEBROWSER
+};
+
+enum NDSMainMenuItem {
+	NDS_ITEM_LOAD_ROM = 0,
+	NDS_ITEM_RESET,
+	NDS_ITEM_MUTE,
+	NDS_ITEM_VOLUME,
+	NDS_ITEM_EXIT,
+	NDS_MAIN_ITEM_COUNT
+};
+
+struct NDSMenuState {
+	NDSMenuScreen screen;
+	int cursor;
+	// File browser state
+	char currentDir[256];
+	struct FileEntry {
+		char name[128];
+		bool isDir;
+	};
+	FileEntry entries[128];
+	int entryCount;
+	int fileScroll;     // first visible index
+	bool needsRedraw;
+};
+
+static NDSMenuState ndsMenu;
+static bool ndsMenuOpen = false;
+
+#define NDS_FILE_LINES 20  // visible file entries on screen
+
+static void ndsMenuScanDir() {
+	DIR* dir = opendir(ndsMenu.currentDir);
+	ndsMenu.entryCount = 0;
+	ndsMenu.fileScroll = 0;
+	if (!dir) return;
+
+	// Add parent directory entry unless at root
+	if (strcmp(ndsMenu.currentDir, "fat:/") != 0 &&
+	    strcmp(ndsMenu.currentDir, "sd:/") != 0) {
+		strncpy(ndsMenu.entries[0].name, "..", sizeof(ndsMenu.entries[0].name));
+		ndsMenu.entries[0].isDir = true;
+		ndsMenu.entryCount = 1;
+	}
+
+	struct dirent* ent;
+	while ((ent = readdir(dir)) != NULL && ndsMenu.entryCount < 128) {
+		// Skip . and ..
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+			continue;
+
+		bool isDir = (ent->d_type == DT_DIR);
+		// Skip non-directory, non-.gtr files
+		if (!isDir) {
+			const char* ext = strrchr(ent->d_name, '.');
+			if (!ext || (strcasecmp(ext, ".gtr") != 0))
+				continue;
+		}
+
+		strncpy(ndsMenu.entries[ndsMenu.entryCount].name, ent->d_name,
+				sizeof(ndsMenu.entries[0].name) - 1);
+		ndsMenu.entries[ndsMenu.entryCount].name[sizeof(ndsMenu.entries[0].name) - 1] = '\0';
+		ndsMenu.entries[ndsMenu.entryCount].isDir = isDir;
+		ndsMenu.entryCount++;
+	}
+	closedir(dir);
+}
+
+static void ndsMenuDrawMain() {
+	// Clear console and draw main menu
+	printf("\x1b[2J");  // clear screen
+	printf("\x1b[0;0H"); // cursor home
+	printf("GAMETANK EMULATOR\n");
+	printf("=========================\n");
+
+	const char* labels[NDS_MAIN_ITEM_COUNT] = {
+		"Load ROM",
+		"Reset",
+		NULL, // Mute (dynamic)
+		NULL, // Volume (dynamic)
+		"Exit"
+	};
+
+	for (int i = 0; i < NDS_MAIN_ITEM_COUNT; i++) {
+		printf("%s ", (ndsMenu.cursor == i) ? ">" : " ");
+		switch (i) {
+			case NDS_ITEM_MUTE:
+				printf("Mute: %s\n",
+					(muteMask & MUTE_SOURCE_MANUAL) ? "ON" : "OFF");
+				break;
+			case NDS_ITEM_VOLUME: {
+				int vol = AudioCoprocessor::singleton_acp_state->volume;
+				printf("Volume: < %3d >\n", vol);
+				break;
+			}
+			default:
+				printf("%s\n", labels[i]);
+				break;
+		}
+	}
+
+	printf("\n D-Pad:Navigate  A:Select  B:Close\n");
+	printf(" L/R on Volume to adjust\n");
+}
+
+static void ndsMenuDrawFileBrowser() {
+	printf("\x1b[2J");
+	printf("\x1b[0;0H");
+	printf("SELECT ROM\n");
+	// Show shortened path
+	printf("%.30s\n", ndsMenu.currentDir);
+	printf("=========================\n");
+
+	int visible = NDS_FILE_LINES;
+	if (ndsMenu.entryCount == 0) {
+		printf("  (empty)\n");
+		return;
+	}
+
+	int end = ndsMenu.fileScroll + visible;
+	if (end > ndsMenu.entryCount) end = ndsMenu.entryCount;
+
+	for (int i = ndsMenu.fileScroll; i < end; i++) {
+		printf("%s ", (ndsMenu.cursor == i) ? ">" : " ");
+		if (ndsMenu.entries[i].isDir) {
+			printf("[%s]/\n", ndsMenu.entries[i].name);
+		} else {
+			printf("%s\n", ndsMenu.entries[i].name);
+		}
+	}
+
+	printf("\n A:Select B:Back L/R:Page\n");
+}
+
+static void ndsMenuDraw() {
+	if (ndsMenu.screen == NDS_MENU_MAIN) {
+		ndsMenuDrawMain();
+	} else {
+		ndsMenuDrawFileBrowser();
+	}
+	ndsMenu.needsRedraw = false;
+}
+
+static void ndsMenuOpen_() {
+	ndsMenuOpen = true;
+	showMenu = true;
+	paused = true;
+	setMenuMute(true);
+	ndsMenu.screen = NDS_MENU_MAIN;
+	ndsMenu.cursor = 0;
+	ndsMenu.needsRedraw = true;
+}
+
+static void ndsMenuClose() {
+	ndsMenuOpen = false;
+	showMenu = false;
+	paused = false;
+	setMenuMute(false);
+	// Clear console
+	printf("\x1b[2J");
+	printf("\x1b[0;0H");
+}
+
+// Called after scanKeys() has already been invoked for this frame
+static void ndsMenuHandleInput() {
+	uint16_t down = keysDown();
+	uint16_t repeat = keysDownRepeat();
+
+	if (ndsMenu.screen == NDS_MENU_MAIN) {
+		if (down & (KEY_L | KEY_R | KEY_B)) {
+			ndsMenuClose();
+			return;
+		}
+		if (repeat & KEY_UP) {
+			ndsMenu.cursor--;
+			if (ndsMenu.cursor < 0) ndsMenu.cursor = NDS_MAIN_ITEM_COUNT - 1;
+			ndsMenu.needsRedraw = true;
+		}
+		if (repeat & KEY_DOWN) {
+			ndsMenu.cursor++;
+			if (ndsMenu.cursor >= NDS_MAIN_ITEM_COUNT) ndsMenu.cursor = 0;
+			ndsMenu.needsRedraw = true;
+		}
+		// LEFT/RIGHT for volume adjustment
+		if ((repeat & KEY_LEFT) && ndsMenu.cursor == NDS_ITEM_VOLUME) {
+			int& vol = AudioCoprocessor::singleton_acp_state->volume;
+			vol -= 16;
+			if (vol < 0) vol = 0;
+			ndsMenu.needsRedraw = true;
+		}
+		if ((repeat & KEY_RIGHT) && ndsMenu.cursor == NDS_ITEM_VOLUME) {
+			int& vol = AudioCoprocessor::singleton_acp_state->volume;
+			vol += 16;
+			if (vol > 256) vol = 256;
+			ndsMenu.needsRedraw = true;
+		}
+		if (down & KEY_A) {
+			switch (ndsMenu.cursor) {
+				case NDS_ITEM_LOAD_ROM:
+					ndsMenu.screen = NDS_MENU_FILEBROWSER;
+					strncpy(ndsMenu.currentDir, "fat:/", sizeof(ndsMenu.currentDir));
+					ndsMenuScanDir();
+					ndsMenu.cursor = 0;
+					ndsMenu.needsRedraw = true;
+					break;
+				case NDS_ITEM_RESET:
+					ndsMenuClose();
+					resetQueued = 2;
+					break;
+				case NDS_ITEM_MUTE:
+					toggleMute();
+					ndsMenu.needsRedraw = true;
+					break;
+				case NDS_ITEM_VOLUME:
+					// A on volume does nothing; use left/right
+					break;
+				case NDS_ITEM_EXIT:
+					running = false;
+					ndsMenuClose();
+					break;
+			}
+		}
+	} else {
+		// File browser
+		if (down & KEY_B) {
+			// Go back to main menu
+			ndsMenu.screen = NDS_MENU_MAIN;
+			ndsMenu.cursor = 0;
+			ndsMenu.needsRedraw = true;
+			return;
+		}
+		if (repeat & KEY_UP) {
+			ndsMenu.cursor--;
+			if (ndsMenu.cursor < 0) ndsMenu.cursor = ndsMenu.entryCount - 1;
+			// Adjust scroll
+			if (ndsMenu.cursor < ndsMenu.fileScroll)
+				ndsMenu.fileScroll = ndsMenu.cursor;
+			if (ndsMenu.cursor >= ndsMenu.fileScroll + NDS_FILE_LINES)
+				ndsMenu.fileScroll = ndsMenu.cursor - NDS_FILE_LINES + 1;
+			ndsMenu.needsRedraw = true;
+		}
+		if (repeat & KEY_DOWN) {
+			ndsMenu.cursor++;
+			if (ndsMenu.cursor >= ndsMenu.entryCount) ndsMenu.cursor = 0;
+			if (ndsMenu.cursor >= ndsMenu.fileScroll + NDS_FILE_LINES)
+				ndsMenu.fileScroll = ndsMenu.cursor - NDS_FILE_LINES + 1;
+			if (ndsMenu.cursor < ndsMenu.fileScroll)
+				ndsMenu.fileScroll = ndsMenu.cursor;
+			ndsMenu.needsRedraw = true;
+		}
+		// Page up/down with L/R
+		if (down & KEY_L) {
+			ndsMenu.cursor -= NDS_FILE_LINES;
+			if (ndsMenu.cursor < 0) ndsMenu.cursor = 0;
+			ndsMenu.fileScroll = ndsMenu.cursor;
+			ndsMenu.needsRedraw = true;
+		}
+		if (down & KEY_R) {
+			ndsMenu.cursor += NDS_FILE_LINES;
+			if (ndsMenu.cursor >= ndsMenu.entryCount)
+				ndsMenu.cursor = ndsMenu.entryCount - 1;
+			ndsMenu.fileScroll = ndsMenu.cursor - NDS_FILE_LINES + 1;
+			if (ndsMenu.fileScroll < 0) ndsMenu.fileScroll = 0;
+			ndsMenu.needsRedraw = true;
+		}
+		if (down & KEY_A) {
+			if (ndsMenu.entryCount == 0) return;
+			auto& entry = ndsMenu.entries[ndsMenu.cursor];
+			if (entry.isDir) {
+				if (strcmp(entry.name, "..") == 0) {
+					// Go up one directory
+					char* lastSlash = strrchr(ndsMenu.currentDir, '/');
+					if (lastSlash && lastSlash != ndsMenu.currentDir) {
+						// Check if it's like "fat:/" — don't go above mount root
+						char* colon = strchr(ndsMenu.currentDir, ':');
+						if (colon && lastSlash == colon + 1) {
+							// Already at root (e.g. "fat:/")
+						} else {
+							*lastSlash = '\0';
+							// Find the new last slash to keep trailing /
+							char* newLast = strrchr(ndsMenu.currentDir, '/');
+							if (newLast) {
+								*(newLast + 1) = '\0';
+							}
+						}
+					}
+				} else {
+					// Enter subdirectory
+					size_t len = strlen(ndsMenu.currentDir);
+					snprintf(ndsMenu.currentDir + len,
+							sizeof(ndsMenu.currentDir) - len,
+							"%s/", entry.name);
+				}
+				ndsMenuScanDir();
+				ndsMenu.cursor = 0;
+				ndsMenu.needsRedraw = true;
+			} else {
+				// Load ROM file
+				char fullPath[512];
+				snprintf(fullPath, sizeof(fullPath), "%s%s",
+						ndsMenu.currentDir, entry.name);
+				ndsMenuClose();
+				LoadRomFile(fullPath);
+			}
+		}
+	}
+}
+
+#endif // NDS_BUILD
 
 #ifndef EM_BOOL
 #define EM_BOOL int
 #endif
 
 void refreshScreen() {
+#ifdef NDS_BUILD
+	// Copy the active framebuffer page from the emulator's vRAM surface
+	// to the DS top screen VRAM, converting 32-bit ARGB -> 15-bit RGB15.
+	int srcY = (system_state.dma_control & DMA_VID_OUT_PAGE_BIT) ? GT_HEIGHT : 0;
+	uint32_t* srcPixels = (uint32_t*)vRAM_Surface->pixels;
+	uint16_t* dsVram = (uint16_t*)BG_BMP_RAM(0);
+
+	// Center 128x128 on 256x192: offset = (256-128)/2 + ((192-128)/2) * 256
+	int xOff = (NDS_SCREEN_WIDTH - GT_WIDTH) / 2;
+	int yOff = (NDS_SCREEN_HEIGHT - GT_HEIGHT) / 2;
+
+	for (int y = 0; y < GT_HEIGHT; y++) {
+		for (int x = 0; x < GT_WIDTH; x++) {
+			uint32_t pixel = srcPixels[(srcY + y) * vRAM_Surface->w + x];
+			dsVram[(yOff + y) * NDS_SCREEN_WIDTH + (xOff + x)] = argb_to_rgb15(pixel);
+		}
+	}
+#else
 	SDL_Rect src, dest;
 	int scr_w, scr_h;
 	src.x = 0;
@@ -866,7 +1372,6 @@ void refreshScreen() {
 	dest.h = dest.w;
 	dest.x = (scr_w - dest.w) / 2;
 	dest.y = (scr_h - dest.h) / 2;
-	//SDL_BlitScaled(vRAM_Surface, &src, screenSurface, &dest);
 	SDL_UpdateTexture(framebufferTexture, NULL, vRAM_Surface->pixels, vRAM_Surface->pitch);
 
 	SDL_RenderClear(mainRenderer);
@@ -1015,6 +1520,7 @@ void refreshScreen() {
 	ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
 #endif
 	SDL_RenderPresent(mainRenderer);
+#endif // !NDS_BUILD
 }
 
 char titlebuf[256];
@@ -1043,7 +1549,7 @@ EM_BOOL mainloop(double time, void* userdata) {
 	if(!paused) {
 #endif
 			timekeeper.actual_cycles = timekeeper.totalCyclesCount;
-#ifndef WASM_BUILD
+#if !defined(WASM_BUILD) && !defined(NDS_BUILD)
 			switch(timekeeper.clock_mode) {
 				case CLOCKMODE_NORMAL:
 					cpu_core->freeze = false;
@@ -1071,17 +1577,21 @@ EM_BOOL mainloop(double time, void* userdata) {
 				printf("Hit illegal opcode %x\npc = %x\n", cpu_core->illegalOpcodeSrc, cpu_core->pc);
 				paused = true;
 			} else if((timekeeper.clock_mode == CLOCKMODE_NORMAL) && (timekeeper.actual_cycles == 0)) {
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 				profiler.zeroConsec++;
 				if(profiler.zeroConsec == 10) {
 					printf("(Got stuck at 0x%x)\n", cpu_core->pc);
 					paused = true;
 				}
+#endif
 				timekeeper.totalCyclesCount += intended_cycles;
 			} else {
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 				profiler.zeroConsec = 0;
+#endif
 			}
 
-#ifndef WASM_BUILD
+#if !defined(WASM_BUILD) && !defined(NDS_BUILD)
 			if(!gofast) {
 				SDL_Delay(timekeeper.time_scaling * intended_cycles/timekeeper.system_clock);
 			} else {
@@ -1097,9 +1607,13 @@ EM_BOOL mainloop(double time, void* userdata) {
 					  sprintf(titlebuf, "%s | %s | s: %.1f inc: %.1f err: %d\n", WINDOW_TITLE, currentRomFilePath.c_str(), timekeeper.time_scaling, timekeeper.scaling_increment, time_error);
 						SDL_SetWindowTitle(mainWindow, titlebuf);
 #endif
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 						profiler.fps = profiler.bufferFlipCount * 60 / 100;
+#endif
 						timekeeper.frameCount = 0;
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 						profiler.bufferFlipCount = 0;
+#endif
 					}
 					bool overlong = time_error > 0;
 
@@ -1134,6 +1648,7 @@ EM_BOOL mainloop(double time, void* userdata) {
 				timekeeper.cycles_since_vsync -= timekeeper.cycles_per_vsync;
 				if(system_state.dma_control & DMA_VSYNC_NMI_BIT) {
 					cpu_core->NMI();
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 					if(vsyncProfileArmed) {
 						profiler.DeepProfileStart();
 						vsyncProfileArmed = false;
@@ -1142,15 +1657,22 @@ EM_BOOL mainloop(double time, void* userdata) {
 						profiler.DeepProfileStop(loadedMemoryMap, SourceMap::singleton);
 						vsyncProfileRunning = false;
 					}
+#endif
 				}
+#if !defined(NDS_BUILD) && !defined(WASM_BUILD)
 				if(!profiler.measure_by_frameflip) {
 					profiler.ResetTimers();
 					profiler.last_blitter_activity = blitter->pixels_this_frame;
 					blitter->pixels_this_frame = 0;
 				}
+#endif
 			}
 		} else {
+#ifdef NDS_BUILD
+				swiWaitForVBlank();
+#else
 				SDL_Delay(16);
+#endif
 		}
 		blitter->CatchUp();
 		
@@ -1159,6 +1681,28 @@ EM_BOOL mainloop(double time, void* userdata) {
 			AudioCoprocessor::fill_audio(AudioCoprocessor::singleton_acp_state, NULL, AudioCoprocessor::singleton_acp_state->samples_per_frame);
 		}
 
+#ifdef NDS_BUILD
+		// NDS: menu toggle with L or R
+		scanKeys();
+		uint16_t ndsDown = keysDown();
+		if (!ndsMenuOpen && (ndsDown & (KEY_L | KEY_R))) {
+			ndsMenuOpen_();
+		}
+
+		if (ndsMenuOpen) {
+			ndsMenuHandleInput();
+			if (ndsMenu.needsRedraw) {
+				ndsMenuDraw();
+			}
+			joysticks->updateNDS(true); // suppress game input
+		} else {
+			joysticks->updateNDS(false);
+			// Check SELECT to reset
+			if (ndsDown & KEY_SELECT) {
+				resetQueued = 2;
+			}
+		}
+#else
 		while( SDL_PollEvent( &e ) != 0 )
         {
 #ifndef WASM_BUILD
@@ -1257,11 +1801,14 @@ EM_BOOL mainloop(double time, void* userdata) {
 					joysticks->update(&e);
 			}
         }
+#endif // NDS_BUILD
 
 		refreshScreen();
+#ifndef NDS_BUILD
 		SDL_UpdateWindowSurface(mainWindow);
+#endif
 
-#ifndef WASM_BUILD
+#if !defined(WASM_BUILD) && !defined(NDS_BUILD)
 		for (auto& window : toolWindows) {
 			window->Draw();
 		}
@@ -1276,7 +1823,7 @@ EM_BOOL mainloop(double time, void* userdata) {
 	if(!running) {
 #ifdef WASM_BUILD
 		emscripten_cancel_main_loop();
-#else
+#elif !defined(NDS_BUILD)
 		for (auto& window : toolWindows) {
 			delete window;
 		}
@@ -1285,8 +1832,10 @@ EM_BOOL mainloop(double time, void* userdata) {
 		ImPlot::DestroyContext(main_implot_ctx);
     	ImGui::DestroyContext(main_imgui_ctx);
 #endif
+#ifndef NDS_BUILD
     	SDL_DestroyRenderer(mainRenderer);
 		SDL_DestroyWindow(mainWindow);
+#endif
 	}
 
 	if(resetQueued) {
@@ -1309,6 +1858,44 @@ int main(int argC, char* argV[]) {
 
 	const char* rom_file_name = NULL;
 
+#ifdef NDS_BUILD
+	// NDS: initialize hardware
+	defaultExceptionHandler();
+
+	// Set up top screen for bitmap output (main engine)
+	videoSetMode(MODE_5_2D);
+	vramSetBankA(VRAM_A_MAIN_BG);
+	bgInit(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
+
+	// Set up bottom screen for debug console (sub engine)
+	videoSetModeSub(MODE_0_2D);
+	vramSetBankC(VRAM_C_SUB_BG);
+	consoleDemoInit();
+	// consoleDemoInit uses the sub engine by default
+
+	printf("GameTank Emulator - NDS\n");
+
+	// Initialize libfat for SD card access
+	if (!fatInitDefault()) {
+		printf("SD card init failed!\n");
+	}
+
+	// Clear DS top screen VRAM to black
+	uint16_t* dsVram = (uint16_t*)BG_BMP_RAM(0);
+	for (int i = 0; i < NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT; i++) {
+		dsVram[i] = RGB15(0, 0, 0) | BIT(15);
+	}
+
+	// ROM path from command line or default
+	for (int argIdx = 1; argIdx < argC; ++argIdx) {
+		if ((argV[argIdx])[0] == '-') {
+			EmulatorConfig::parseArg(argV[argIdx]);
+		} else if (!rom_file_name) {
+			rom_file_name = argV[argIdx];
+		}
+	}
+	// rom_file_name stays NULL if not provided — menu will open
+#else
 #ifdef EMBED_ROM_FILE
 	rom_file_name = EMBED_ROM_FILE;
 #else
@@ -1336,20 +1923,22 @@ int main(int argC, char* argV[]) {
 		}
 	}
 #endif
+#endif // NDS_BUILD
 
-	//cartridge_state.rom = new uint8_t [cartridge_state.size];
-		for(int i = 0; i < cartridge_state.size; i++) {
-			cartridge_state.rom[i] = 0;
-		}
+	for(int i = 0; i < cartridge_state.size; i++) {
+		cartridge_state.rom[i] = 0;
+	}
 
 	joysticks = new JoystickAdapter();
 	soundcard = new AudioCoprocessor();
 	cpu_core = new mos6502(MemoryRead, MemoryWrite, CPUStopped, MemorySync);
 	cpu_core->Reset();
 	cartridge_state.write_mode = false;
-	blitter = new Blitter(cpu_core, &timekeeper, &system_state, vRAM_Surface);
-	randomize_memory();
-	
+
+#ifdef NDS_BUILD
+	vRAM_Surface = NDS_CreateSurface(GT_WIDTH, GT_HEIGHT * 2);
+	gRAM_Surface = NULL; // gRAM too big for NDS (2MB)
+#else
 	SDL_Init(SDL_INIT_VIDEO);
 	atexit(SDL_Quit);
 
@@ -1389,23 +1978,48 @@ int main(int argC, char* argV[]) {
 	    bmask = 0x00ff0000;
 	    amask = 0xff000000;
 	#endif
+#endif // NDS_BUILD
 
+	blitter = new Blitter(cpu_core, &timekeeper, &system_state, vRAM_Surface);
+#ifndef NDS_BUILD
+	randomize_memory();
 	randomize_vram();
-
-	if(!rom_file_name || LoadRomFile(rom_file_name) == -1) {
-		paused = true;
-#ifdef TINYFILEDIALOGS_H
-		if(rom_file_name) {
-			tinyfd_notifyPopup("Alert",
-			"No ROM was loaded",
-			"warning");
-		}
 #endif
-		
+
+	if(rom_file_name) {
+		if(LoadRomFile(rom_file_name) == -1) {
+			rom_file_name = NULL;
+		}
 	}
 
-#ifdef WASM_BUILD
+	if(!rom_file_name) {
+		paused = true;
+#ifdef TINYFILEDIALOGS_H
+		tinyfd_notifyPopup("Alert",
+		"No ROM was loaded",
+		"warning");
+#endif
+	}
 
+#ifdef NDS_BUILD
+	// If no ROM loaded, open menu immediately so user can browse
+	if (!rom_file_name) {
+		ndsMenuOpen_();
+		ndsMenuDraw();
+	} else {
+		// Clear console for clean game display
+		printf("\x1b[2J");
+	}
+
+	// Enable key repeat for menu navigation
+	keysSetRepeat(25, 5);
+
+	// NDS main loop
+	while(running) {
+		mainloop(0, NULL);
+		swiWaitForVBlank();
+	}
+#elif defined(WASM_BUILD)
 	emscripten_request_animation_frame_loop(mainloop, 0);
 #else
 	SDL_RaiseWindow(mainWindow);
@@ -1415,7 +2029,7 @@ int main(int argC, char* argV[]) {
 	joysticks->SaveBindings();
 #endif
 
-#ifndef WASM_BUILD
+#if !defined(WASM_BUILD) && !defined(NDS_BUILD)
 	if(savingThread.joinable()) {
 		savingThread.join();
 	}
